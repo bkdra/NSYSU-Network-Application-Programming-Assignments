@@ -95,6 +95,10 @@ int main(void)
         prev = sigset(SIGUSR1, SIG_HOLD);
         failures += print_result("sigset(SIG_HOLD) succeeds", prev != SIG_ERR);
 
+        // The signal should be blocked by SIG_HOLD, so the handler should not be called and the count should remain the same.
+        raise(SIGUSR1);
+        failures += print_result("sigset(SIG_HOLD) blocks delivery", usr1_count == 2);
+
         // The previous handler is returned, and this signal is blocked by SIG_HOLD before, so it should return SIG_HOLD.
         prev = sigset(SIGUSR1, usr1_handler);
         failures += print_result("sigset returns SIG_HOLD if previously blocked", prev == SIG_HOLD);
@@ -115,6 +119,7 @@ int main(void)
     alarm(1);
     errno = 0;
     printf("6. test sigpause (check that it waits for signal delivery and returns -1 with EINTR)\n");
+    printf("waiting for SIGALRM...\n");
     if (sigpause(SIGALRM) != -1) { // means that sigpause returned without being interrupted by the signal, which is a failure.
         failures += print_result("sigpause returns -1", 0);
     } else {

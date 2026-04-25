@@ -1,8 +1,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=gnu11 -g
 
-TARGETS = sig_speed_sigsuspend sig_speed_sigwaitinfo
-TEST_TARGETS = test_systemvsigs
+TARGETS = sig_speed_sigsuspend sig_speed_sigwaitinfo test_systemvsigs
 COMMON_OBJS = get_num.o error_functions.o
 SIGSUSPEND_OBJS = sig_speed_sigsuspend.o $(COMMON_OBJS)
 SIGWAITINFO_OBJS = sig_speed_sigwaitinfo.o $(COMMON_OBJS)
@@ -11,7 +10,6 @@ SIGWAITINFO_OBJS = sig_speed_sigwaitinfo.o $(COMMON_OBJS)
 
 all: $(TARGETS)
 
-test: $(TEST_TARGETS)
 
 sig_speed_sigsuspend: $(SIGSUSPEND_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(SIGSUSPEND_OBJS)

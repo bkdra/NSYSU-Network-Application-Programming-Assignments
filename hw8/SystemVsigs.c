@@ -23,6 +23,7 @@ void (*sigset(int sig, void (*handler)(int)))(int)
         if (sigaction(sig, NULL, &oldsa) == -1)
             return SIG_ERR;
 
+        // if the signal was already blocked before, we return SIG_HOLD to indicate that the signal is still blocked, even though we didn't change the handler.
         if (was_blocked)
             return SIG_HOLD;
 
