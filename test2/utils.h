@@ -1,0 +1,1 @@
+void printWithTime(const char *message);
