@@ -18,16 +18,21 @@ int main()
         perror("zmq_socket");
         exit(1);
     }
+    if(zmq_setsockopt(socket, ZMQ_SUBSCRIBE, "", 0) == -1)
+    {
+        perror("zmq_setsockopt");
+        exit(1);
+    }
     if(zmq_connect(socket, "tcp://localhost:5557") == -1)
     {
         perror("zmq_connect");
         exit(1);
     }
 
-    zmq_msg_t msg;
-    zmq_msg_init(&msg);
     while(1)
     {
+        zmq_msg_t msg;
+        zmq_msg_init(&msg);
         if(zmq_msg_recv(&msg, socket, 0) == -1)
         {
             perror("zmq_msg_recv");

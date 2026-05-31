@@ -5,17 +5,27 @@
 #include "msg_system.h"
 #include<time.h>
 #include<unistd.h>
+#include "latency_shm.h"
 
 int main(int argc, char *argv[])
 {
-    if(argc != 3)
+    if(argc != 6)
     {
-        fprintf(stderr, "Usage: %s <Queue Size> <Task Count>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <Shared Memory Name> <Task Count> <Task Interval> <Worker Count> <Queue Size>\n", argv[0]);
         exit(1);
     }
-    int queue_size = atoi(argv[1]);
+    const char *latency_shm_name = argv[1];
+    int queue_size = atoi(argv[5]);
     int task_count = atoi(argv[2]);
+    int task_interval = atoi(argv[3]);
+    int total_worker_count = atoi(argv[4]);
     void *context = zmq_ctx_new();
+    int shm_fd = -1;
+    LatencyShm *latency_shm = latency_shm_open(latency_shm_name, task_count, &shm_fd);
+    if(latency_shm == NULL)
+    {
+        exit(1);
+    }
  
     Node *worker_queue = NULL;
     Node *worker_queue_tail = NULL;
@@ -25,6 +35,14 @@ int main(int argc, char *argv[])
     int pending_task_count = 0;
     int dropped_task_count = 0;
     int processed_task_count = 0;
+    long long *broker_receive_ns = calloc(task_count, sizeof(long long));
+    if(broker_receive_ns == NULL)
+    {
+        perror("calloc");
+        exit(1);
+    }
+    long long total_latency_ns = 0;
+    int latency_sample_count = 0;
 
     if(context == NULL)
     {
@@ -72,7 +90,7 @@ int main(int argc, char *argv[])
 
     time_t last_monitor_time = time(NULL);
 
-    while(processed_task_count < task_count)
+    while(processed_task_count + dropped_task_count < task_count)
     {
         // printf("run\n");
         fflush(stdout);
@@ -80,13 +98,13 @@ int main(int argc, char *argv[])
         if(difftime(current_time, last_monitor_time) >= 1.0)
         {
 
-            printf("-------------------broker state: -------------------\n");
-            printf("Queue size: %d\n", queue_size - pending_task_count);
-            printf("Idle workers: %d\n", worker_count);
-            printf("Processed: %d\n", processed_task_count);
-            printf("Dropped: %d\n", dropped_task_count);
-            printf("----------------------------------------------------\n");
-            fflush(stdout);
+            // printf("-------------------broker state: -------------------\n");
+            // printf("Queue size: %d\n", queue_size - pending_task_count);
+            // printf("Idle workers: %d\n", worker_count);
+            // printf("Processed: %d\n", processed_task_count);
+            // printf("Dropped: %d\n", dropped_task_count);
+            // printf("----------------------------------------------------\n");
+            // fflush(stdout);
             // send monitoring data to monitor
             char monitor_message[100];
                 snprintf(monitor_message, 100, "QUEUE SIZE: %d, WORKERS: %d, PROCESSED: %d, DROPPED: %d", queue_size - pending_task_count, worker_count, processed_task_count, dropped_task_count);
@@ -130,13 +148,23 @@ int main(int argc, char *argv[])
             }
             memcpy(task, zmq_msg_data(&task_msg), task_size);
             task[task_size] = '\0';
-            printf("broker receive task: %d\n", get_task_id(task));
+            int task_id = get_task_id(task);
+            if(task_id < 0 || task_id >= task_count)
+            {
+                fprintf(stderr, "broker received invalid task payload: %s\n", task);
+                dropped_task_count++;
+                zmq_msg_close(&client_id_msg);
+                zmq_msg_close(&task_msg);
+                continue;
+            }
+            broker_receive_ns[task_id] = latency_now_ns();
+            // printf("broker receive task: %d\n", task_id);
             if(worker_queue != NULL)
             {
                 // assign task to worker
                 int worker_id = Dequeue(&worker_queue, &worker_queue_tail);
                 worker_count--;
-                printf("Assign task %d to worker %d\n", get_task_id(task), worker_id);
+                // printf("Assign task %d to worker %d\n", task_id, worker_id);
                 if(worker_id != -1)
                 {
                     // send task to worker
@@ -164,13 +192,13 @@ int main(int argc, char *argv[])
                 if(pending_task_count < queue_size)
                 {
                     // enqueue task to pending task queue
-                    printf("pend task %d (current pending task count: %d)\n", get_task_id(task), pending_task_count);
-                    Enqueue(&pending_task_queue, &pending_task_queue_tail, get_task_id(task)); // using task id as worker id for simplicity
+                    // printf("pend task %d (current pending task count: %d)\n", task_id, pending_task_count);
+                    Enqueue(&pending_task_queue, &pending_task_queue_tail, task_id);
                     pending_task_count++;
                 }
                 else
                 {
-                    printf("Task queue is full. Discarding task: %s\n", task);
+                    // printf("Task queue is full. Discarding task: %s\n", task);
                     dropped_task_count++;
                 }
             }
@@ -193,7 +221,6 @@ int main(int argc, char *argv[])
             }
             memset(&worker_id, 0, sizeof(worker_id));
             memcpy(&worker_id, zmq_msg_data(&worker_id_msg), zmq_msg_size(&worker_id_msg));
-            printf("-------------------worker_id: %d\n", worker_id);
 
             if(zmq_msg_recv(&empty_msg, backend, 0) == -1)
             {
@@ -206,9 +233,17 @@ int main(int argc, char *argv[])
                 perror("zmq_msg_recv");
                 exit(1);
             }
-            if(zmq_msg_size(&ready_msg) >= 4 && memcmp(zmq_msg_data(&ready_msg), "DONE", 4) == 0) // worker is complete its work
+            if(zmq_msg_size(&ready_msg) >= 5 + sizeof(int) && memcmp(zmq_msg_data(&ready_msg), "DONE", 4) == 0) // worker is complete its work
             {
-                printf("worker %d is complete its work\n", worker_id);
+                int done_task_id;
+                memcpy(&done_task_id, (char *)zmq_msg_data(&ready_msg) + 5, sizeof(int));
+                if(done_task_id >= 0 && done_task_id < task_count && broker_receive_ns[done_task_id] >= 0 && latency_shm->send_ns[done_task_id] >= 0)
+                {
+                    long long done_ns = latency_now_ns();
+                    total_latency_ns += done_ns - latency_shm->send_ns[done_task_id];
+                    latency_sample_count++;
+                }
+                // printf("worker %d is complete its work\n", worker_id);
                 // worker is ready
                 processed_task_count++;
                 if(pending_task_queue != NULL)
@@ -242,28 +277,40 @@ int main(int argc, char *argv[])
                 }
                 else
                 {
-                    printf("worker %d is ready\n", worker_id);
+                    // printf("worker %d is ready\n", worker_id);
                     Enqueue(&worker_queue, &worker_queue_tail, worker_id);
                     worker_count++;
                 }
             }
             else // READY
             {
-                printf("worker %d start\n", worker_id);
+                // printf("worker %d start\n", worker_id);
                 Enqueue(&worker_queue, &worker_queue_tail, worker_id);
                 worker_count++;
             }
         }
     }
     
+    printf("D=%d R=%dms W=%d Q=%d\n", task_count, task_interval, total_worker_count, queue_size);
     printf("Total tasks: %d\n", task_count);
     printf("Processed tasks: %d\n", processed_task_count);
     printf("Dropped tasks: %d\n", dropped_task_count);
     printf("Loss rate: %1.2f%%\n", (float)dropped_task_count / task_count * 100);
-    printf("Average latency: \n");
+    if(latency_sample_count > 0)
+    {
+        printf("Average total latency: %.3f ms\n", (double)total_latency_ns / latency_sample_count / 1000000.0);
+    }
+    else
+    {
+        printf("Average latency: no completed tasks\n");
+    }
+    printf("\n");
+
     zmq_close(frontend);
     zmq_close(backend);
     zmq_close(monitor);
+    latency_shm_close(latency_shm, shm_fd);
+    free(broker_receive_ns);
     zmq_ctx_destroy(context);
 }
 
@@ -305,6 +352,9 @@ int Dequeue(Node **queue, Node **queue_tail)
 int get_task_id(char *message)
 {
     int task_id;
-    sscanf(message, "TASK %d", &task_id);
+    if(sscanf(message, "TASK %d", &task_id) != 1)
+    {
+        return -1;
+    }
     return task_id;
 }

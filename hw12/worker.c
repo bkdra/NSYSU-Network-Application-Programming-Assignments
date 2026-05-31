@@ -71,7 +71,7 @@ int main(int argc, char *argv[])
         buffer[message_size] = '\0';
         int task_id = get_task_id(buffer); // parse task id from message
         
-        int randNum = rand() % 99001 + 1000; // random number between 1000 and 100000
+        int randNum = rand() % 2000001 + 1000000; // random number between 500000 and 1000000
         usleep(randNum); // simulate work by sleeping for random time
         
         zmq_msg_init_size(&done_message, 5+sizeof(int));
